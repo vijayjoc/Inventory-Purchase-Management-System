@@ -1,8 +1,16 @@
 {
+  "name": "inventory-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "db:init": "psql \"$DATABASE_URL\" -f schema.sql"
+  },
+  "engines": { "node": ">=20" },
   "dependencies": {
     "cors": "^2.8.6",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
-    "mysql2": "^3.24.4"
+    "pg": "^8.13.0"
   }
 }
