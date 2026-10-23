@@ -15,7 +15,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 //get endpoint
 app.get('/api/item-types', async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM item_types ORDER BY id ASC');
+    const { rows } = await db.query('SELECT * FROM item_types ORDER BY id ASC');
     res.json(rows);  
   } catch (err) {
     console.error(err);
@@ -30,9 +30,10 @@ app.post('/api/item-types', async (req, res) => {
   }
 
   try {
-    const [result] = await db.query('INSERT INTO item_types (type_name) VALUES (?)', [type_name.trim()]);
-    res.status(201).json({ id: result.insertId, type_name: type_name.trim() });
+    const { rows } = await db.query('INSERT INTO item_types (type_name) VALUES ($1) RETURNING id', [type_name.trim()]);
+    res.status(201).json({ id: rows[0].id, type_name: type_name.trim() });
   } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Item type already exists' });
     console.error(err);
     res.status(500).json({ error: 'Could not create item type' });
   }
@@ -62,7 +63,7 @@ app.get('/api/items', async (req, res) => {
       JOIN item_types it ON i.item_type_id = it.id
       ORDER BY i.id DESC
           `;
-    const [items] = await db.query(query);
+    const { rows: items } = await db.query(query);
     res.json(items);
   } catch (err) {
     console.error(err);
@@ -72,11 +73,11 @@ app.get('/api/items', async (req, res) => {
 
 app.get('/api/items/:id', async (req, res) => {
   try {
-    const [rows] = await db.query(
+    const { rows } = await db.query(
       `SELECT i.*, it.type_name 
        FROM items i 
        JOIN item_types it ON i.item_type_id = it.id 
-       WHERE i.id = ?`, //retrives items and its category
+       WHERE i.id = $1`, //retrives items and its category
       [req.params.id]
     );
 
@@ -102,17 +103,17 @@ app.post('/api/items', async (req, res) => {
   }
 
   try {
-    const [typeCheck] = await db.query('SELECT id FROM item_types WHERE id = ?', [item_type_id]);
+    const { rows: typeCheck } = await db.query('SELECT id FROM item_types WHERE id = $1', [item_type_id]);
     if (typeCheck.length === 0) {
       return res.status(400).json({ error: 'Invalid item type' });
     }
 
-    const [result] = await db.query(
-      'INSERT INTO items (name, item_type_id, purchase_date, stock_available, active) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), item_type_id, purchase_date, stock_available, active ? 1 : 0]
+    const { rows } = await db.query(
+      'INSERT INTO items (name, item_type_id, purchase_date, stock_available, active) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [name.trim(), item_type_id, purchase_date, stock_available, !!active]
     );
 
-    res.status(201).json({ message: 'Item saved', itemId: result.insertId });
+    res.status(201).json({ message: 'Item saved', itemId: rows[0].id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to add item' });
@@ -130,12 +131,12 @@ app.put('/api/items/:id', async (req, res) => {
   }
 
   try {
-    const [result] = await db.query(
-      'UPDATE items SET name = ?, item_type_id = ?, purchase_date = ?, stock_available = ?, active = ? WHERE id = ?',
-      [name.trim(), item_type_id, purchase_date, stock_available, active ? 1 : 0, req.params.id]
+    const result = await db.query(
+      'UPDATE items SET name = $1, item_type_id = $2, purchase_date = $3, stock_available = $4, active = $5 WHERE id = $6',
+      [name.trim(), item_type_id, purchase_date, stock_available, !!active, req.params.id]
     );
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Item not found' });
     }
     res.json({ message: 'Item updated successfully' });
@@ -149,15 +150,15 @@ app.delete('/api/items/:id', async (req, res) => {
   const itemId = req.params.id;
   try {
     // Business Rule: Check if item is already tied to purchases
-    const [orders] = await db.query('SELECT id FROM purchase_items WHERE item_id = ? LIMIT 1', [itemId]);
+    const { rows: orders } = await db.query('SELECT id FROM purchase_items WHERE item_id = $1 LIMIT 1', [itemId]);
     if (orders.length > 0) {
       return res.status(409).json({ 
         error: 'Cannot delete: Item is linked to existing purchase history. Mark it Inactive instead.' 
       });
     }
 
-    const [delResult] = await db.query('DELETE FROM items WHERE id = ?', [itemId]);
-    if (delResult.affectedRows === 0) {
+    const delResult = await db.query('DELETE FROM items WHERE id = $1', [itemId]);
+    if (delResult.rowCount === 0) {
       return res.status(404).json({ error: 'Item not found' });
     }
 
@@ -177,14 +178,14 @@ app.get('/api/purchases', async (req, res) => {
         p.id, 
         p.order_id, 
         p.purchase_date, 
-        COUNT(pi.id) AS total_items, 
-        COALESCE(SUM(pi.quantity), 0) AS total_units
+        COUNT(pi.id)::int AS total_items, 
+        COALESCE(SUM(pi.quantity), 0)::int AS total_units
       FROM purchases p
       LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
       GROUP BY p.id, p.order_id, p.purchase_date
       ORDER BY p.id DESC
     `;
-    const [orders] = await db.query(query);
+    const { rows: orders } = await db.query(query);
     res.json(orders);
   } catch (err) {
     console.error(err);
@@ -211,9 +212,11 @@ app.get('/api/purchases/:identifier', async (req, res) => {
       JOIN purchase_items pi ON p.id = pi.purchase_id
       JOIN items i ON pi.item_id = i.id
       JOIN item_types it ON i.item_type_id = it.id
-      WHERE p.order_id = ? OR p.id = ?
+      WHERE p.order_id = $1 OR p.id = $2
     `;
-    const [rows] = await db.query(query, [param, param]);
+    // order_id is text, id is an integer: only compare to id when the value is numeric
+    const numericId = /^\d+$/.test(param) ? parseInt(param, 10) : null;
+    const { rows } = await db.query(query, [param, numericId]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Purchase record not found' });
@@ -259,33 +262,33 @@ app.post('/api/purchases', async (req, res) => {
     orderLines[item.item_id] = (orderLines[item.item_id] || 0) + qty;
   }
 
-  const conn = await db.getConnection();
+  const conn = await db.connect();
   try {
-    await conn.beginTransaction();
+    await conn.query('BEGIN');
 
-    const [exists] = await conn.query('SELECT id FROM purchases WHERE order_id = ?', [order_id.trim()]);
+    const { rows: exists } = await conn.query('SELECT id FROM purchases WHERE order_id = $1', [order_id.trim()]);
     if (exists.length > 0) {
-      await conn.rollback();
+      await conn.query('ROLLBACK');
       return res.status(400).json({ error: `Order ID '${order_id}' already exists` });
     }
 
     // Lock and validate each item
     for (const [id, reqQty] of Object.entries(orderLines)) {
-      const [stockRows] = await conn.query('SELECT id, name, stock_available, active FROM items WHERE id = ? FOR UPDATE', [id]);
+      const { rows: stockRows } = await conn.query('SELECT id, name, stock_available, active FROM items WHERE id = $1 FOR UPDATE', [id]);
       
       if (stockRows.length === 0) {
-        await conn.rollback();
+        await conn.query('ROLLBACK');
         return res.status(404).json({ error: `Item not found` });
       }
 
       const currentItem = stockRows[0];
       if (!currentItem.active) {
-        await conn.rollback();
+        await conn.query('ROLLBACK');
         return res.status(400).json({ error: `Item '${currentItem.name}' is inactive and cannot be purchased` });
       }
 
       if (currentItem.stock_available < reqQty) {
-        await conn.rollback();
+        await conn.query('ROLLBACK');
         return res.status(400).json({ 
           error: `Insufficient stock for '${currentItem.name}'. Available: ${currentItem.stock_available}, Requested: ${reqQty}` 
         });
@@ -293,28 +296,28 @@ app.post('/api/purchases', async (req, res) => {
     }
 
     // Insert order header
-    const [purchaseRes] = await conn.query(
-      'INSERT INTO purchases (order_id, purchase_date) VALUES (?, ?)',
+    const { rows: purchaseRes } = await conn.query(
+      'INSERT INTO purchases (order_id, purchase_date) VALUES ($1, $2) RETURNING id',
       [order_id.trim(), purchase_date]
     );
-    const purchaseId = purchaseRes.insertId;
+    const purchaseId = purchaseRes[0].id;
 
     // Insert order lines & deduct inventory
     for (const [id, reqQty] of Object.entries(orderLines)) {
       await conn.query(
-        'INSERT INTO purchase_items (purchase_id, item_id, quantity) VALUES (?, ?, ?)',
+        'INSERT INTO purchase_items (purchase_id, item_id, quantity) VALUES ($1, $2, $3)',
         [purchaseId, id, reqQty]
       );
       await conn.query(
-        'UPDATE items SET stock_available = stock_available - ? WHERE id = ?',
+        'UPDATE items SET stock_available = stock_available - $1 WHERE id = $2',
         [reqQty, id]
       );
     }
 
-    await conn.commit();
+    await conn.query('COMMIT');
     res.status(201).json({ message: 'Purchase placed successfully', order_id });
   } catch (err) {
-    await conn.rollback();
+    await conn.query('ROLLBACK').catch(() => {});
     console.error('Purchase creation failed:', err);
     res.status(500).json({ error: 'Failed to complete transaction' });
   } finally {
@@ -332,17 +335,17 @@ app.put('/api/purchases/:id', async (req, res) => {
     return res.status(400).json({ error: 'At least one item is required' });
   }
 
-  const conn = await db.getConnection();
+  const conn = await db.connect();
   try {
-    await conn.beginTransaction();
+    await conn.query('BEGIN');
 
-    const [purchase] = await conn.query('SELECT id FROM purchases WHERE id = ?', [purchaseId]);
+    const { rows: purchase } = await conn.query('SELECT id FROM purchases WHERE id = $1', [purchaseId]);
     if (purchase.length === 0) {
-      await conn.rollback();
+      await conn.query('ROLLBACK');
       return res.status(404).json({ error: 'Purchase record not found' });
     }
 
-    const [oldItems] = await conn.query('SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?', [purchaseId]);
+    const { rows: oldItems } = await conn.query('SELECT item_id, quantity FROM purchase_items WHERE purchase_id = $1', [purchaseId]);
     const oldQty = {};
     oldItems.forEach(i => { oldQty[i.item_id] = i.quantity; });
 
@@ -350,7 +353,7 @@ app.put('/api/purchases/:id', async (req, res) => {
     for (const line of items) {
       const q = parseInt(line.quantity, 10);
       if (!q || q <= 0) {
-        await conn.rollback();
+        await conn.query('ROLLBACK');
         return res.status(400).json({ error: 'Quantity must be greater than zero' });
       }
       newQty[line.item_id] = (newQty[line.item_id] || 0) + q;
@@ -365,13 +368,13 @@ app.put('/api/purchases/:id', async (req, res) => {
       const diff = next - prev;
 
       if (diff > 0) {
-        const [rows] = await conn.query('SELECT name, stock_available FROM items WHERE id = ? FOR UPDATE', [itemId]);
+        const { rows } = await conn.query('SELECT name, stock_available FROM items WHERE id = $1 FOR UPDATE', [itemId]);
         if (rows.length === 0) {
-          await conn.rollback();
+          await conn.query('ROLLBACK');
           return res.status(404).json({ error: 'Item not found' });
         }
         if (rows[0].stock_available < diff) {
-          await conn.rollback();
+          await conn.query('ROLLBACK');
           return res.status(400).json({
             error: `Cannot update: '${rows[0].name}' needs ${diff} more units, only ${rows[0].stock_available} in stock.`
           });
@@ -383,24 +386,24 @@ app.put('/api/purchases/:id', async (req, res) => {
     for (const itemId of allItemIds) {
       const diff = (newQty[itemId] || 0) - (oldQty[itemId] || 0);
       if (diff !== 0) {
-        await conn.query('UPDATE items SET stock_available = stock_available - ? WHERE id = ?', [diff, itemId]);
+        await conn.query('UPDATE items SET stock_available = stock_available - $1 WHERE id = $2', [diff, itemId]);
       }
     }
 
-    await conn.query('UPDATE purchases SET purchase_date = ? WHERE id = ?', [purchase_date, purchaseId]);
-    await conn.query('DELETE FROM purchase_items WHERE purchase_id = ?', [purchaseId]);
+    await conn.query('UPDATE purchases SET purchase_date = $1 WHERE id = $2', [purchase_date, purchaseId]);
+    await conn.query('DELETE FROM purchase_items WHERE purchase_id = $1', [purchaseId]);
 
     for (const [itemId, qty] of Object.entries(newQty)) {
       await conn.query(
-        'INSERT INTO purchase_items (purchase_id, item_id, quantity) VALUES (?, ?, ?)',
+        'INSERT INTO purchase_items (purchase_id, item_id, quantity) VALUES ($1, $2, $3)',
         [purchaseId, itemId, qty]
       );
     }
 
-    await conn.commit();
+    await conn.query('COMMIT');
     res.json({ message: 'Purchase and inventory updated successfully' });
   } catch (err) {
-    await conn.rollback();
+    await conn.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: 'Failed to update purchase' });
   } finally {
@@ -411,6 +414,11 @@ app.put('/api/purchases/:id', async (req, res) => {
 // NOTE: Requirement says Purchases MUST NOT be deleted (Audit Trail)
 // No DELETE /api/purchases endpoint is provided.
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+db.initSchema()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('Could not connect to / initialise the database:', err);
+    process.exit(1);
+  });
