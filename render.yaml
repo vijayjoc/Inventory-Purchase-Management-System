@@ -1,0 +1,24 @@
+# Render Blueprint: creates the PostgreSQL database AND the web service,
+# and wires the database's connection string into the app as DATABASE_URL.
+databases:
+  - name: inventory-db
+    databaseName: inventory_db
+    user: inventory_user
+    plan: free            # free Postgres on Render expires after a limited time; use a paid plan for real use
+    region: oregon        # must match the web service region
+
+services:
+  - type: web
+    name: inventory-app
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inventory-db
+          property: connectionString   # this is the INTERNAL url
