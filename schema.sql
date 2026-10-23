@@ -44,3 +44,8 @@ CREATE TRIGGER items_set_updated_at BEFORE UPDATE ON items
 DROP TRIGGER IF EXISTS purchases_set_updated_at ON purchases;
 CREATE TRIGGER purchases_set_updated_at BEFORE UPDATE ON purchases
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Default categories (only inserted when the table is empty)
+INSERT INTO item_types (type_name)
+SELECT v FROM (VALUES ('Electronics'), ('Furniture'), ('Clothing'), ('Grocery'), ('Stationery')) AS t(v)
+WHERE NOT EXISTS (SELECT 1 FROM item_types);
