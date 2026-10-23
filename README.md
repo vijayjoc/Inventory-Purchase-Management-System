@@ -291,6 +291,3 @@ The app and its database are both hosted on [Render](https://render.com). The ap
 - **Idempotent schema:** `schema.sql` uses `IF NOT EXISTS` and can run on every startup, which removes any manual migration step for new environments.
 - **Parameterized queries:** every query uses `$1, $2, ...` placeholders, which protects against SQL injection.
 
-## License
-
-Add a license of your choice (for example, MIT) and reference it here.
